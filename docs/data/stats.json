@@ -1,0 +1,6 @@
+[
+ ["ρ = −0.22", "correlation between one-step error and error after 400 steps across 36 KdV models (turbulence: −0.48)"],
+ ["−64%", "median long-horizon error after Noether projection on KdV; it helps all 36 models"],
+ ["9.0 → 1.7", "U-Net turbulence error at step 100, raw vs projected: energy pile-up removed"],
+ ["0.94 vs 0.87", "early-warning AUROC of the unprojected energy drift vs a second model (KdV, projected)"]
+]

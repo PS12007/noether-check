@@ -1,6 +1,6 @@
-data/
-runs/
+/data/
+/runs/
 __pycache__/
 .pytest_cache/
-scratch/
+/scratch/
 *.log
