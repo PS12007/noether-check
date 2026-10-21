@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noether Check: technical report</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&family=DM+Mono&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #1b1914; --soft: #5a5246; --rule: #c9bc9f; --accent: #1f5fa8; }
+  @page { size: Letter; margin: 0.8in 0.85in; }
+  html { background: #fff; }
+  body { font-family: "Newsreader", Georgia, serif; color: var(--ink); font-size: 11pt; line-height: 1.45; max-width: 7in; margin: 0 auto; padding: 32px 16px; background: #fff; }
+  h1 { font-size: 21pt; line-height: 1.15; margin: 0 0 6px; font-weight: 600; letter-spacing: -.01em; }
+  .sub { font-size: 12.5pt; color: var(--soft); margin: 0 0 10px; font-style: italic; }
+  .meta { font-family: "DM Mono", monospace; font-size: 8.5pt; color: var(--soft); margin-bottom: 18px; }
+  .meta a { color: var(--accent); }
+  .abstract { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); padding: 10px 0; margin: 0 0 18px; font-size: 10.5pt; }
+  .abstract b { font-variant: small-caps; letter-spacing: .04em; }
+  h2 { font-size: 13pt; margin: 20px 0 6px; font-weight: 600; break-after: avoid; }
+  h3 { font-size: 11pt; margin: 14px 0 4px; font-weight: 600; font-style: italic; break-after: avoid; }
+  p, li { text-align: justify; hyphens: auto; }
+  p { margin: 0 0 8px; }
+  ul, ol { margin: 0 0 8px; padding-left: 20px; }
+  figure { margin: 12px 0 14px; break-inside: avoid; }
+  figure img { width: 100%; display: block; }
+  figcaption { font-size: 9.2pt; color: var(--soft); margin-top: 5px; line-height: 1.35; }
+  figcaption b { color: var(--ink); }
+  table { border-collapse: collapse; width: 100%; font-size: 9.2pt; margin: 8px 0 12px; break-inside: avoid; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 3px 6px; text-align: left; }
+  th { border-bottom: 1px solid var(--ink); font-weight: 600; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  caption { caption-side: top; text-align: left; font-size: 9.2pt; color: var(--soft); padding-bottom: 4px; }
+  caption b { color: var(--ink); }
+  code { font-family: "DM Mono", monospace; font-size: 9pt; }
+  .eq { text-align: center; margin: 6px 0 10px; font-style: italic; }
+  ol.refs { font-size: 9pt; padding-left: 18px; }
+  ol.refs li { margin-bottom: 3px; text-align: left; }
+  .box { border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; margin: 10px 0 12px; }
+</style>
+</head>
+<body>
+
+<h1>Noether Check: neural PDE surrogates break conservation laws, and that is both the problem and the alarm</h1>
+<p class="sub">A study of one-step-trained surrogates for KdV solitons and 2D turbulence: one-step error does not rank long rollouts, restoring the invariants repairs them, and the invariants left unrestored flag failures without a reference solution</p>
+<p class="meta">PS12007 · technical report · October 2026 ·
+<a href="https://github.com/PS12007/noether-check">github.com/PS12007/noether-check</a> ·
+<a href="https://ps12007.github.io/noether-check/">interactive demo</a></p>
+
+<div class="abstract"><b>Abstract.</b> Neural surrogates for PDEs are trained and ranked on one-step error, then rolled out for hundreds of steps on their own predictions.
+We train a controlled zoo of 64 surrogates (FNO, ResNet and U-Net; two sizes; input-noise and soft-penalty variants; one to three seeds) on two systems with exact
+conservation laws, KdV solitons and decaying 2D turbulence, and study what happens over long rollouts. (1) One-step error does not rank long rollouts. Across 36 KdV models its
+Spearman correlation with the error at step 400 is −0.22, and with turbulence error at step 100 it is −0.48: the ResNets are the most accurate per step and the ones that blow up.
+(2) A <i>Noether projection</i>, the minimum-norm correction after each step that restores chosen invariants, needs no retraining and repairs much of the damage.
+On KdV, restoring mass and momentum cuts the median error at step 400 by 64%, helps all 36 models, and reduces drift in the energy, which is never projected, about 8×.
+On turbulence, imposing the exact energy budget halves the error at step 100 and keeps the energy spectrum close to the reference long after the pointwise forecast has expired.
+It cannot fix failures that the projected quantities do not see (a grid-scale checkerboard that carries enstrophy but no energy), nor models applied far outside their training data.
+(3) The invariants left unprojected are a reference-free alarm. Held-out energy drift flags failing KdV rollouts as well as disagreement with a second model, or better
+(early-warning AUROC 0.94 against 0.87), and the held-out enstrophy budget flags unphysical turbulence rollouts with AUROC 0.98–1.00, where twin disagreement drops toward chance.
+Projecting <i>every</i> invariant removes the blow-ups and improves pointwise error but leaves spectra wrong by orders of magnitude with nothing left to raise the alarm: an
+invariant is worth more as an alarm than as one more constraint.</div>
+
+<h2>1 · Introduction</h2>
+<p>Neural surrogates promise to replace expensive PDE solvers: train a network to map the state at time <i>t</i> to the state at
+<i>t</i> + Δ<i>t</i>, then apply it repeatedly. They are usually trained and compared on one-step error, while in use they are rolled out
+for hundreds of steps on their own predictions. Small errors compound, the state drifts off the set of physically reachable states, and
+the surrogate, which has never seen such inputs, eventually diverges [3, 4]. A recent survey of the fluid-PDE literature found that weak
+baselines and short evaluation horizons make many such models look better than they are [9].</p>
+<p>Physics offers a check that the reference solution does not: conserved quantities. By Noether's theorem every continuous symmetry of a
+Hamiltonian system gives a conserved quantity, and dissipative systems obey exact budgets for how fast such quantities decay. A
+surrogate's rollout can be tested against these laws at any time, without knowing the true solution. This report asks three questions
+of a controlled population of surrogates:</p>
+<ol>
+<li><b>Ranking.</b> Does one-step error predict long-horizon error, invariant drift or time to failure, across architectures, sizes and training tricks?</li>
+<li><b>Repair.</b> If, after every step, we make the smallest change to the predicted state that restores some of the invariants (a
+<i>Noether projection</i>, in the spirit of projection methods for geometric integration [6]), how much of the long-horizon error goes away,
+and what happens out of distribution?</li>
+<li><b>Alarm.</b> Can the drift of the invariants that were <i>not</i> projected tell, without the reference, which rollouts have failed or
+will fail? We compare against disagreement with a second, independently trained model, the standard ensemble baseline [8], which costs twice as much.</li>
+</ol>
+<p>Everything, from reference solvers to figures, runs on one laptop GPU in a few hours; no dataset is downloaded.</p>
+
+<h2>2 · Setup</h2>
+<h3>Systems and reference solvers</h3>
+<p><b>KdV.</b> The Korteweg–de Vries equation <i>u<sub>t</sub></i> + 6<i>uu<sub>x</sub></i> + <i>u<sub>xxx</sub></i> = 0 on a periodic domain
+of length 40 with 128 points. Solitons travel at a speed proportional to their height and pass through each other unchanged. KdV is
+integrable and conserves infinitely many quantities; we use the first three, mass <i>M</i> = ∫<i>u</i>, momentum <i>P</i> = ∫<i>u</i>²
+and energy <i>H</i> = ∫(½<i>u<sub>x</sub></i>² − <i>u</i>³). The solver is pseudo-spectral with exponential time differencing (ETDRK4,
+contour-integral coefficients [5]), Δ<i>t</i> = 0.005, 2/3 dealiasing. Training starts are sums of 1–4 solitons with speeds 0.3–1.5; the
+<i>out-of-distribution</i> (OOD) starts are smooth random fields, which break up into solitons and radiation. Snapshots every 0.5 time units;
+training trajectories have 100 steps, test and OOD trajectories 400.</p>
+<p><b>2D turbulence.</b> Incompressible Navier–Stokes in vorticity form, <i>ω<sub>t</sub></i> + <b>u</b>·∇<i>ω</i> = <i>ν</i>∆<i>ω</i>, on
+[0, 2π)² at 64², <i>ν</i> = 10<sup>−3</sup>, decaying from random initial fields with an energy peak at wavenumber 4 (OOD: 8, i.e. smaller
+eddies). Pseudo-spectral RK4 with an integrating factor, Δ<i>t</i> = 0.01, after a spin-up of 2 time units. Mean vorticity is conserved,
+and the kinetic energy <i>E</i> and enstrophy <i>Z</i> = ½⟨<i>ω</i>²⟩ obey exact budgets d<i>E</i>/d<i>t</i> = −2<i>νZ</i> and
+d<i>Z</i>/d<i>t</i> = −2<i>νP</i>, with <i>P</i> the palinstrophy ½⟨|∇<i>ω</i>|²⟩. Snapshots every 0.5; training trajectories have 20 steps,
+test and OOD trajectories 100. On the reference data every invariant or budget holds to 10<sup>−4</sup> relative error or better.</p>
+<h3>The surrogate zoo</h3>
+<p>Three architectures common in the literature: a Fourier neural operator (FNO [1]), a periodic ResNet [10] and a U-Net [11], each predicting the
+increment <i>u<sub>t+1</sub></i> − <i>u<sub>t</sub></i> (residual form). Per architecture we train a small and a base size, plus two standard
+stabilisers at base size: Gaussian input noise of 1% of the state's standard deviation (as in the pushforward-trick literature [3]) and a soft
+invariant penalty (relative mismatch of mass and momentum, or mean and energy, weight 0.1, in the spirit of physics-informed losses [12]).
+Models are trained only on one-step pairs (AdamW, one-cycle schedule, 20 epochs for KdV and 30 for turbulence). For KdV this gives 36 models (12 configurations, three seeds). Turbulence training is costlier, so there we trained every FNO
+configuration and the small and base ResNets with three seeds, the other two ResNet variants with one seed, and every U-Net configuration with two seeds:
+28 models. One of them (U-Net with the penalty, seed 0) trained badly (one-step error 0.27, against 0.05 for its twin); we keep it.</p>
+<h3>Measurements</h3>
+<p>For every model we roll out all test and OOD starts with no projection (<i>raw</i>) and with projection (<i>projected</i>), and record
+relative L2 error against the reference, invariant drift, blow-up (any value above 10³ or non-finite, after which the rollout counts as failed),
+and <i>valid steps</i>, the number of steps before the error first exceeds 0.5. KdV drift is |<i>I</i>(<i>t</i>) − <i>I</i>(0)| divided by
+a scale that cannot vanish (∫|<i>u</i><sub>0</sub>|, ∫<i>u</i><sub>0</sub>², ∫(½<i>u</i><sub>0,x</sub>² + |<i>u</i><sub>0</sub>|³)).
+Turbulence drift is the residual of each budget integrated with the trapezoid rule, relative to the initial value. None of these drifts uses the reference solution.</p>
+
+<h2>3 · One-step error does not rank long rollouts</h2>
+<figure><img src="figures/rank_kdv.png" alt="One-step error vs long-horizon outcomes, KdV"><figcaption><b>Figure 1.</b> KdV, all 36 models: one-step test error
+against valid steps (left), error at step 400 (middle) and energy drift at step 400 (right). Blown-up rollouts are clipped at 10. Colour: architecture;
+marker: configuration. Spearman ρ across models in each title.</figcaption></figure>
+<p>On KdV, one-step error ranks the models almost perfectly at short horizons (Spearman ρ = 0.96 with the error at step 1 and 0.93 at step 10), but the
+correlation fades to 0.37 by step 50, to zero by step 100, and turns <i>negative</i> by step 400 (ρ = −0.22; Figure 1). The reason is visible in the
+figure: the ResNets have the lowest one-step error of all 36 models (1.6 × 10<sup>−4</sup> at base size, against 2.6 × 10<sup>−4</sup> for the FNO), yet
+two thirds of their test rollouts blow up within 400 steps, while no FNO rollout does. Model selection by one-step error would pick
+the worst model for long rollouts. </p>
+<figure><img src="figures/rank_ns.png" alt="One-step error vs long-horizon outcomes, turbulence"><figcaption><b>Figure 2.</b> The same for 2D turbulence (28 models),
+at step 100.</figcaption></figure>
+<p>Turbulence shows the reversal in a different form (Figure 2). The flow is chaotic, so every surrogate decorrelates from the reference within 10–40 steps, and over
+that window one-step error is a good guide: lower one-step error means more valid steps (ρ = −0.85). By step 100 it has flipped: the correlation between one-step error and error is −0.48, so the more accurate a model is
+for one step, the worse it tends to end. The ResNets are the most accurate early (median one-step error 0.018, against 0.047 for U-Nets and 0.087 for FNOs)
+and are the ones whose rollouts explode: 43% of ResNet rollouts have blown up by step 100, against none of the FNO rollouts.</p>
+<table>
+<caption><b>Table 1.</b> KdV, medians over three seeds (test set). Error is relative L2; ∞ means more than half the rollouts blew up.</caption>
+<tr><th>Configuration</th><th class="n">Params</th><th class="n">One-step</th><th class="n">Error @100</th><th class="n">Error @400</th><th class="n">Projected @400</th><th class="n">Valid steps</th><th class="n">Projected</th></tr>
+<tr><td>FNO small</td><td class="n">58k</td><td class="n">6.6e-04</td><td class="n">0.052</td><td class="n">0.873</td><td class="n">0.394</td><td class="n">278</td><td class="n">401</td></tr>
+<tr><td>FNO base</td><td class="n">418k</td><td class="n">2.6e-04</td><td class="n">0.030</td><td class="n">0.394</td><td class="n">0.078</td><td class="n">401</td><td class="n">401</td></tr>
+<tr><td>FNO base + noise</td><td class="n">418k</td><td class="n">7.1e-04</td><td class="n">0.059</td><td class="n">0.715</td><td class="n">0.258</td><td class="n">318</td><td class="n">401</td></tr>
+<tr><td>FNO base + penalty</td><td class="n">418k</td><td class="n">2.6e-04</td><td class="n">0.029</td><td class="n">0.385</td><td class="n">0.098</td><td class="n">401</td><td class="n">401</td></tr>
+<tr><td>ResNet small</td><td class="n">42k</td><td class="n">3.3e-04</td><td class="n">0.397</td><td class="n">∞</td><td class="n">1.136</td><td class="n">105</td><td class="n">218</td></tr>
+<tr><td>ResNet base</td><td class="n">329k</td><td class="n">1.6e-04</td><td class="n">0.080</td><td class="n">∞</td><td class="n">1.226</td><td class="n">126</td><td class="n">176</td></tr>
+<tr><td>ResNet base + noise</td><td class="n">329k</td><td class="n">9.9e-04</td><td class="n">0.046</td><td class="n">0.467</td><td class="n">0.206</td><td class="n">401</td><td class="n">401</td></tr>
+<tr><td>ResNet base + penalty</td><td class="n">329k</td><td class="n">1.6e-04</td><td class="n">0.068</td><td class="n">∞</td><td class="n">1.217</td><td class="n">134</td><td class="n">189</td></tr>
+<tr><td>U-Net small</td><td class="n">163k</td><td class="n">7.0e-04</td><td class="n">0.051</td><td class="n">0.853</td><td class="n">0.255</td><td class="n">304</td><td class="n">401</td></tr>
+<tr><td>U-Net base</td><td class="n">650k</td><td class="n">4.2e-04</td><td class="n">0.029</td><td class="n">0.362</td><td class="n">0.182</td><td class="n">401</td><td class="n">401</td></tr>
+<tr><td>U-Net base + noise</td><td class="n">650k</td><td class="n">6.9e-04</td><td class="n">0.051</td><td class="n">0.629</td><td class="n">0.200</td><td class="n">348</td><td class="n">401</td></tr>
+<tr><td>U-Net base + penalty</td><td class="n">650k</td><td class="n">4.3e-04</td><td class="n">0.027</td><td class="n">0.332</td><td class="n">0.147</td><td class="n">401</td><td class="n">401</td></tr>
+</table>
+<p>The training tricks behave inconsistently across architectures (Table 1). Input noise rescues the ResNet (from 126 valid steps to all 400), but
+nearly doubles the long-horizon error of the FNO and U-Net and costs them valid steps. The soft invariant penalty changes almost nothing: the networks already
+match mass and momentum to within their one-step error on the training distribution, so the penalty is nearly zero where it is evaluated and
+offers no protection where rollouts drift.</p>
+
+<h2>4 · Restoring the invariants</h2>
+<h3>Method</h3>
+<p>Given a predicted state <i>u</i> and target values <i>c<sub>j</sub></i> for differentiable quantities <i>I<sub>j</sub></i>, the Noether projection solves</p>
+<p class="eq">min ‖δ‖² subject to <i>I<sub>j</sub></i>(<i>u</i> + δ) = <i>c<sub>j</sub></i>,</p>
+<p>with a few Gauss–Newton steps δ = <i>J</i><sup>T</sup>(<i>JJ</i><sup>T</sup>)<sup>−1</sup>(<i>c</i> − <i>I</i>(<i>u</i>)), where <i>J</i> is the Jacobian of the
+quantities with respect to the state (one backward pass per quantity; four iterations, batched). For KdV we restore mass and momentum to their initial
+values and leave energy free. For turbulence we restore the mean vorticity and impose the energy budget for the step,
+<i>E</i><sub>t+1</sub> = <i>E<sub>t</sub></i> − <i>ν</i>Δ<i>t</i>(<i>Z<sub>t</sub></i> + <i>Z</i><sub>t+1</sub>), with <i>Z</i><sub>t+1</sub> taken
+from the raw prediction, and leave the enstrophy budget free. The projection needs no retraining and adds a few milliseconds per step. The quantity left
+free is the one we later use as an alarm.</p>
+<figure><img src="figures/horizon_kdv.png" alt="Error and energy drift vs step, KdV"><figcaption><b>Figure 3.</b> KdV, base models (median over trajectories, then over three seeds):
+raw rollouts (dashed) against projected rollouts (solid). Left: test error. Middle: drift of the energy, which is never projected. Right: OOD error.</figcaption></figure>
+<h3>KdV</h3>
+<p>Projection helps every one of the 36 models on in-distribution rollouts from step 100 on. The median ratio of projected to raw error falls from
+0.89 at step 10 to 0.57 at step 50 and 0.36 at step 400, i.e. a 64% reduction (Figure 3). For the base FNO the error at step 400 drops from 0.39 to 0.08.
+The share of models whose median rollout blows up drops from 24% to 2%, and the median number of valid steps rises from 350 to all 401.
+Strikingly, the <i>energy</i>, which is never projected, drifts about 8× less (median ratio 0.13 at step 400, lower in every model where both are finite): restoring
+two invariants keeps the state near the manifold of physical solutions, where the third one also holds. Projection does not save the ResNets, though; it only
+delays them (126 → 176 valid steps at base size). Their errors are not mainly in the conserved directions.</p>
+<figure><img src="figures/gallery_kdv.png" alt="Space-time plots of KdV rollouts"><figcaption><b>Figure 4.</b> One KdV test trajectory (time upward): the reference, and the
+base ResNet and FNO (seed 0) rolled out raw and projected. The raw ResNet blows up at t = 45. Projected, it stays bounded but turns into a train of paired
+positive and negative ridges on a raised background. That pattern has the right mass and momentum but is not a KdV solution, and its energy drift
+gives it away. Both FNO rollouts track the reference; the projected one stays in phase longer.</figcaption></figure>
+<p><b>Out of distribution</b>, every model fails from the first step (median one-step error 0.67 on random fields, against 4 × 10<sup>−4</sup> in distribution):
+these starts lie outside anything the models have seen. Here projection does what it can and no more. It keeps 94% of the rollouts finite, against 22% for raw
+rollouts, but the bounded rollouts are wrong (median error 1.4), and where both are finite the projected error is typically 30% higher than raw. Projection is a repair for
+drift, not for a model that has not learned the dynamics.</p>
+<h3>2D turbulence</h3>
+<figure><img src="figures/horizon_ns.png" alt="Error and enstrophy drift vs step, turbulence"><figcaption><b>Figure 5.</b> Turbulence, base models: raw (dashed) against
+projected (mean vorticity and energy budget; solid). Middle: the enstrophy budget, which is never projected.</figcaption></figure>
+<p>Pointwise error is a blunt instrument here. Once a rollout has decorrelated from the reference, its error settles near √2 ≈ 1.4 (two unrelated fields with the same
+energy), so errors well above that mean the rollout has gained energy or blown up. Projection leaves the first 20 steps essentially unchanged (median ratio of
+projected to raw error 0.98) but halves the error by step 100 (ratio 0.54; lower in 86% of models). Of the 28 models, 23 have a median error above 2 at step 100 without
+projection and 7 with it (Figure 5). It rescues the U-Nets (median error at step 100 from 9.0 to 1.7; blow-ups from 8% to none) and the FNOs (2.4 to 1.5), whose failure is
+energy pile-up at the grid scale (Figure 6). The held-out enstrophy budget is violated about 8× less (median ratio 0.12).</p>
+<p>Projection does not rescue the ResNets: 39% of their rollouts still blow up by step 100, against 43% raw. Their failure is a grid-scale checkerboard (Figure 6, t = 25),
+which carries enstrophy but almost no kinetic energy, because energy weights each wavenumber by 1/<i>k</i>². An energy constraint cannot see it, and the enstrophy
+budget, which can, is violated by up to four orders of magnitude.</p>
+<figure><img src="figures/gallery_ns.png" alt="Vorticity snapshots"><figcaption><b>Figure 6.</b> Vorticity of one test trajectory: reference and the three base models
+(seed 0), raw and projected. All rollouts decorrelate from the reference by t ≈ 10. The FNO and U-Net rollouts pile up energy at the grid scale, and projection removes it.
+The ResNet develops a checkerboard that projection cannot remove.</figcaption></figure>
+<p><b>Statistics after predictability is lost.</b> The relevant question for a chaotic system is whether the rollout keeps the right statistics. We measure the
+error of the kinetic-energy spectrum, the mean over shells <i>k</i> = 1–21 of |log<sub>10</sub>(<i>E</i><sub>pred</sub>(<i>k</i>)/<i>E</i><sub>ref</sub>(<i>k</i>))|, for the base models
+(Figure 7). As a yardstick, simply keeping the initial state gives 1.36 at step 100, because the true spectrum decays. Projected FNO and U-Net rollouts keep the spectrum
+much closer than that: at step 100 the FNO's spectrum error falls from 1.26 raw to 0.36, the U-Net's from 2.94 to 1.00. So once the energy budget holds, the surrogate's
+statistics stay physical long after its pointwise forecast has expired. The ResNets end far off either way (5.1 raw, 3.1 projected).</p>
+<figure><img src="figures/spectra_ns.png" alt="Energy spectrum error vs step"><figcaption><b>Figure 7.</b> Energy-spectrum error of base-model rollouts against
+the reference at the same time (median over trajectories and seeds), raw (dashed) and projected (solid). Dotted: the initial state held fixed.</figcaption></figure>
+<p><b>Projecting more is not better.</b> If we also impose the enstrophy budget, nothing is held out. The ResNets then stop blowing up (no blow-ups; median error at step 100 falls
+from 342 to 1.1), and by pointwise error every architecture looks better than with the energy budget alone (1.1–1.3). But the spectrum gets worse: the ResNet's spectrum
+error rises to 4.8 and the U-Net's from 1.00 to 4.4, so on average each shell is off by four orders of magnitude. The constraints hold, so the state looks
+plausible by every quantity being enforced, yet the flow is wrong, and no conserved quantity is left to raise the alarm. Projection and monitoring compete for the same
+invariants, and keeping one back is worth more than a cosmetically better error.</p>
+
+<h2>5 · The broken laws as an alarm</h2>
+<p>Restoring some invariants leaves the others free to reveal trouble. We pool the per-trajectory values of all models and ask how well each label-free signal,
+measured at step <i>h</i>, separates rollouts whose error exceeds 0.3 from the rest (AUROC; 0.5 is chance), both <i>now</i> (error at step <i>h</i>) and
+<i>later</i> (error at the final step, predicted from the signal at step <i>h</i>). The baseline is the disagreement between a model and its twin (same
+configuration, another seed), which needs a second network and a second rollout. A third setting pools in-distribution and OOD starts, as a deployed monitor would see them.</p>
+<figure><img src="figures/monitor_kdv.png" alt="AUROC of drift monitors, KdV"><figcaption><b>Figure 8.</b> KdV: AUROC for "error above 0.3 at this step" for each drift and for twin-model
+disagreement. Mass and momentum drift are omitted for projected rollouts, where they are zero by construction.</figcaption></figure>
+<table>
+<caption><b>Table 2.</b> KdV early warning: AUROC for "final error (step 400) above 0.3", from the signal at step 50 / 100 / 200, and for the error at step 400 itself.</caption>
+<tr><th>Rollouts</th><th>Signal</th><th class="n">Step 50</th><th class="n">Step 100</th><th class="n">Step 200</th><th class="n">Now, step 400</th></tr>
+<tr><td>in distribution, raw</td><td>energy drift</td><td class="n">0.78</td><td class="n">0.85</td><td class="n">0.89</td><td class="n">0.89</td></tr>
+<tr><td>in distribution, raw</td><td>momentum drift</td><td class="n">0.76</td><td class="n">0.84</td><td class="n">0.87</td><td class="n">0.89</td></tr>
+<tr><td>in distribution, raw</td><td>twin-model disagreement</td><td class="n">0.71</td><td class="n">0.75</td><td class="n">0.77</td><td class="n">0.76</td></tr>
+<tr><td>in distribution, projected</td><td>energy drift</td><td class="n">0.79</td><td class="n">0.88</td><td class="n">0.93</td><td class="n">0.92</td></tr>
+<tr><td>in distribution, projected</td><td>twin-model disagreement</td><td class="n">0.78</td><td class="n">0.83</td><td class="n">0.87</td><td class="n">0.87</td></tr>
+<tr><td>test + OOD, raw</td><td>energy drift</td><td class="n">0.90</td><td class="n">0.93</td><td class="n">0.95</td><td class="n">0.95</td></tr>
+<tr><td>test + OOD, raw</td><td>momentum drift</td><td class="n">0.89</td><td class="n">0.93</td><td class="n">0.94</td><td class="n">0.95</td></tr>
+<tr><td>test + OOD, raw</td><td>twin-model disagreement</td><td class="n">0.87</td><td class="n">0.89</td><td class="n">0.88</td><td class="n">0.87</td></tr>
+<tr><td>test + OOD, projected</td><td>energy drift</td><td class="n">0.93</td><td class="n">0.96</td><td class="n">0.98</td><td class="n">0.97</td></tr>
+<tr><td>test + OOD, projected</td><td>twin-model disagreement</td><td class="n">0.93</td><td class="n">0.94</td><td class="n">0.95</td><td class="n">0.95</td></tr>
+</table>
+<p>On KdV the held-out energy drift is as good as the twin model or better in every setting (Figure 8, Table 2). On projected in-distribution rollouts it reaches
+AUROC 0.92 at step 400, against 0.87 for the twin, and as an early warning it predicts at step 200 which rollouts will fail by step 400 with AUROC 0.94, against 0.87.
+On raw rollouts the gap is wider (0.89 against 0.76 at step 400). One reason is that twins fail in correlated ways: two ResNets that both blow up agree
+with each other far longer than either agrees with the truth. When OOD starts are mixed in, every signal improves, and energy drift on projected rollouts reaches 0.97. Mass and
+momentum drift are also good alarms on raw rollouts. After projection they carry no signal by construction, so which quantities to project and which to keep
+as alarms is a design choice.</p>
+<h3>Turbulence</h3>
+<p>Turbulence needs a different target. The flow is chaotic, so by step 20 more than 90% of all rollouts exceed an error of 0.3 whatever the model, and that label
+stops separating good rollouts from bad. On that target, while it still has both classes (steps 5–20), the twin model is the better signal (AUROC 0.90–0.99, against
+0.77–0.93 for the budgets), as expected: once two chaotic rollouts have diverged from the truth they have also diverged from each other. The failure that matters
+after predictability is lost is a rollout that becomes <i>unphysical</i>. A decorrelated field with the right energy has relative error near √2 ≈ 1.4; we call a rollout
+unphysical when its error exceeds 2, which happens through energy pile-up or blow-up. On that target the budgets are far better than the twin (Figure 9, Table 3).
+The held-out enstrophy budget identifies unphysical projected rollouts with AUROC 0.98–1.00 from step 20 to step 100, while twin disagreement falls to 0.65.
+On raw rollouts twin disagreement drops to chance (0.46 at step 100), because twins that both blow up or both pile up energy agree with each other.</p>
+<figure><img src="figures/monitor_ns.png" alt="AUROC of budget monitors, turbulence"><figcaption><b>Figure 9.</b> Turbulence: AUROC for "the rollout is unphysical at this
+step" (error above 2). Before step 20 no rollout is unphysical, so there is nothing to score. The energy budget is omitted for projected rollouts, where it is imposed.</figcaption></figure>
+<table>
+<caption><b>Table 3.</b> Turbulence early warning: AUROC for "unphysical at step 100", from the signal at step 10 / 20 / 50, and for the state at step 100 itself.</caption>
+<tr><th>Rollouts</th><th>Signal</th><th class="n">Step 10</th><th class="n">Step 20</th><th class="n">Step 50</th><th class="n">Now, step 100</th></tr>
+<tr><td>in distribution, raw</td><td>enstrophy budget</td><td class="n">0.35</td><td class="n">0.65</td><td class="n">0.85</td><td class="n">0.98</td></tr>
+<tr><td>in distribution, raw</td><td>energy budget</td><td class="n">0.47</td><td class="n">0.66</td><td class="n">0.87</td><td class="n">0.98</td></tr>
+<tr><td>in distribution, raw</td><td>twin-model disagreement</td><td class="n">0.43</td><td class="n">0.56</td><td class="n">0.53</td><td class="n">0.46</td></tr>
+<tr><td>in distribution, projected</td><td>enstrophy budget</td><td class="n">0.18</td><td class="n">0.63</td><td class="n">0.88</td><td class="n">0.98</td></tr>
+<tr><td>in distribution, projected</td><td>twin-model disagreement</td><td class="n">0.19</td><td class="n">0.46</td><td class="n">0.68</td><td class="n">0.65</td></tr>
+<tr><td>test + OOD, raw</td><td>enstrophy budget</td><td class="n">0.47</td><td class="n">0.61</td><td class="n">0.76</td><td class="n">0.86</td></tr>
+<tr><td>test + OOD, raw</td><td>energy budget</td><td class="n">0.49</td><td class="n">0.60</td><td class="n">0.83</td><td class="n">0.94</td></tr>
+<tr><td>test + OOD, raw</td><td>twin-model disagreement</td><td class="n">0.48</td><td class="n">0.60</td><td class="n">0.58</td><td class="n">0.45</td></tr>
+<tr><td>test + OOD, projected</td><td>enstrophy budget</td><td class="n">0.21</td><td class="n">0.52</td><td class="n">0.89</td><td class="n">0.99</td></tr>
+<tr><td>test + OOD, projected</td><td>twin-model disagreement</td><td class="n">0.16</td><td class="n">0.45</td><td class="n">0.71</td><td class="n">0.79</td></tr>
+</table>
+<p>The early warning is limited: at step 10, before anything has gone wrong, no signal predicts which rollouts will turn unphysical (AUROC 0.2–0.5). Values below 0.5
+mean that early budget drift is, if anything, larger in the rollouts that will survive. The FNOs, which drift early but never blow up, account for much of this.
+From step 50 the enstrophy budget gives a useful warning (0.85–0.89) while twin disagreement does not (0.53–0.71).</p>
+
+<h2>6 · Things that did not work, and caveats</h2>
+<ul>
+<li><b>A soft invariant penalty is not a substitute for the projection.</b> On KdV it left every architecture's long-horizon behaviour unchanged within seed noise (Table 1). On turbulence it made things worse: the penalised ResNet has fewer valid steps than the plain one (25 against 32), and one of the two penalised
+U-Nets trained poorly. A loss term is evaluated only on training inputs; the projection acts on every state the rollout actually visits.</li>
+<li><b>Input noise is not a universal stabiliser.</b> It fixes the ResNet and harms the FNO and the U-Net on KdV.</li>
+<li><b>Projection can make OOD rollouts worse</b> by keeping them bounded but wrong, which removes the most obvious failure signal (a blow-up). The held-out drift has to take over that job.</li>
+<li><b>The KdV OOD set is very hard.</b> Every model fails at the first step, so on that set alone the alarm has nothing to rank; we therefore report it pooled with the test set.</li>
+<li><b>One reference resolution and one time step per system.</b> We did not study how the results change with Δ<i>t</i>, resolution or training-set size.</li>
+</ul>
+
+<h2>7 · Limitations</h2>
+<p>Two systems, both periodic and both with simple, known invariants. Many systems of interest (with boundaries, forcing or unknown conserved quantities) offer weaker
+checks; the projection then needs a budget like the one used for turbulence, which requires knowing the dissipation. The zoo spans three architectures at modest size;
+larger or newer surrogates (for example diffusion-based refiners [4]) may fail differently. Pooled AUROCs mix models of very different quality, so part of what they
+measure is telling good models from bad ones; that is what a deployed monitor would face, but the per-model picture is weaker. For turbulence the zoo is smaller (28 models, with one to three seeds per configuration). The "unphysical" threshold (error above 2) is a choice, but
+the comparison does not depend on it: for thresholds from 1.6 to 5 the enstrophy budget scores AUROC 0.89–1.00 at step 100 and the twin model 0.42–0.72.</p>
+
+<h2>8 · Related work</h2>
+<p>Long-rollout instability of neural PDE solvers is well documented [3, 4, 9]; remedies include training on noisy or self-generated inputs [3], refinement with
+diffusion-like denoising [4] and learned correction of a coarse solver [7]. Building conservation into the architecture is an alternative to post-hoc projection:
+Hamiltonian networks [2] and divergence-free parametrisations [13] conserve exactly by construction, and ProbConserv [12] imposes conservation laws on a
+probabilistic model's output with a closely related constrained update. Projection onto invariant manifolds is classical in geometric numerical integration [6]. Our
+contribution is to measure, across a controlled zoo, how much a minimal post-hoc projection helps and where it fails, and to show that the unprojected invariants make a
+cheap, reference-free alarm that is competitive with ensembles.</p>
+
+<h2>9 · Conclusion</h2>
+<p>Conservation laws are cheap to check and are rarely used when neural surrogates are evaluated or deployed. Across 64 models and two systems, one-step error was a poor
+and sometimes inverted guide to long-horizon behaviour, a minimum-norm projection onto a few invariants removed most of the long-horizon error where the failure lay in
+those invariants, and the invariants deliberately left free identified failing rollouts without a reference solution, as well as or better than a second model. The practical
+recipe is to split the known invariants. Project some of them to keep the rollout physical, keep the others as alarms, and report long-horizon and statistical metrics
+alongside one-step error. All code, data generation and figures are in the repository and run on a single laptop GPU.</p>
+
+<h2>References</h2>
+<ol class="refs">
+<li>Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stuart, A. Anandkumar. Fourier neural operator for parametric partial differential equations. ICLR 2021.</li>
+<li>S. Greydanus, M. Dzamba, J. Yosinski. Hamiltonian neural networks. NeurIPS 2019.</li>
+<li>J. Brandstetter, D. Worrall, M. Welling. Message passing neural PDE solvers. ICLR 2022.</li>
+<li>P. Lippe, B. Veeling, P. Perdikaris, R. Turner, J. Brandstetter. PDE-Refiner: achieving accurate long rollouts with neural PDE solvers. NeurIPS 2023.</li>
+<li>A.-K. Kassam, L. N. Trefethen. Fourth-order time-stepping for stiff PDEs. SIAM J. Sci. Comput. 26(4), 2005.</li>
+<li>E. Hairer, C. Lubich, G. Wanner. Geometric Numerical Integration, 2nd ed., Springer 2006 (Section IV.4, projection methods).</li>
+<li>D. Kochkov, J. A. Smith, A. Alieva, Q. Wang, M. P. Brenner, S. Hoyer. Machine learning–accelerated computational fluid dynamics. PNAS 118(21), 2021.</li>
+<li>B. Lakshminarayanan, A. Pritzel, C. Blundell. Simple and scalable predictive uncertainty estimation using deep ensembles. NeurIPS 2017.</li>
+<li>N. McGreivy, A. Hakim. Weak baselines and reporting biases lead to overoptimism in machine learning for fluid-related partial differential equations. Nature Machine Intelligence 6, 2024.</li>
+<li>K. He, X. Zhang, S. Ren, J. Sun. Deep residual learning for image recognition. CVPR 2016.</li>
+<li>O. Ronneberger, P. Fischer, T. Brox. U-Net: convolutional networks for biomedical image segmentation. MICCAI 2015.</li>
+<li>D. Hansen, D. C. Maddix, S. Alizadeh, G. Gupta, M. W. Mahoney. Learning physical models that can respect conservation laws. ICML 2023.</li>
+<li>J. Richter-Powell, Y. Lipman, R. T. Q. Chen. Neural conservation laws: a divergence-free perspective. NeurIPS 2022.</li>
+</ol>
+
+</body>
+</html>

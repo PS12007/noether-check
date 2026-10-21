@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noether Check</title>
+<meta name="description" content="Neural PDE surrogates break conservation laws. Restoring them fixes long rollouts, and the laws they still break tell you when a rollout has gone wrong.">
+<style>
+:root {
+  --bg: #fbfaf8; --surface: #ffffff; --surface-2: #f3f2ef; --line: #e3e1dc;
+  --ink: #141413; --ink-2: #4f4e4a; --muted: #85837d;
+  --accent: #2a78d6; --raw: #eb6834; --proj: #2a78d6; --truth: #141413;
+  --radius: 10px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --surface: #1f1f1d; --surface-2: #2a2a27; --line: #383834;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #8f8d86;
+    --accent: #3987e5; --raw: #e8773f; --proj: #4a93e8; --truth: #f0efec; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --surface: #1f1f1d; --surface-2: #2a2a27; --line: #383834;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #8f8d86;
+  --accent: #3987e5; --raw: #e8773f; --proj: #4a93e8; --truth: #f0efec; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 0 16px 64px; }
+header { padding: 48px 0 8px; }
+h1 { font-size: clamp(30px, 6vw, 44px); line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+h2 { font-size: 22px; margin: 48px 0 8px; letter-spacing: -0.01em; }
+p { margin: 0 0 12px; color: var(--ink-2); max-width: 70ch; }
+.lede { font-size: 18px; }
+a { color: var(--accent); }
+.links { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.btn, button, select { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  padding: 7px 13px; border-radius: 999px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+button:hover, .btn:hover { border-color: var(--muted); }
+button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 28px 0 0; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.stat b { display: block; font-size: 26px; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.stat span { font-size: 14px; color: var(--ink-2); }
+.lab { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-top: 16px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 14px; }
+.group { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.group > span { font-size: 13px; color: var(--muted); margin-right: 2px; }
+.panes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.pane h3 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 6px; }
+.pane h3 em { font-style: normal; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pane canvas { width: 100%; display: block; border-radius: 6px; background: var(--surface-2); image-rendering: pixelated; }
+.pane.ns canvas { aspect-ratio: 1; }
+.pane.kdv canvas { aspect-ratio: 0.8; }
+#profile { width: 100%; height: 150px; display: block; margin-top: 12px; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.charts h3 { font-size: 13px; font-weight: 600; margin: 0 0 2px; color: var(--ink-2); }
+.charts svg { width: 100%; height: 170px; display: block; overflow: visible; }
+@media (max-width: 720px) { .panes { gap: 6px; } .charts { grid-template-columns: 1fr; } }
+.time { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.time input { flex: 1; accent-color: var(--accent); }
+.time output { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--ink-2); min-width: 64px; text-align: right; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin-top: 6px; }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
+.note { font-size: 14px; padding: 8px 12px; background: var(--surface-2); border-radius: 8px; margin-top: 12px; color: var(--ink-2); }
+figure { margin: 16px 0 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+figure img { width: 100%; height: auto; display: block; border-radius: 4px; background: #fff; }
+figcaption { font-size: 14px; color: var(--ink-2); margin-top: 8px; }
+.steps { counter-reset: s; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 16px; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.step h3 { font-size: 16px; margin: 0 0 4px; }
+.step h3::before { counter-increment: s; content: counter(s) ". "; color: var(--muted); }
+.step p { font-size: 15px; margin: 0; }
+footer { margin-top: 56px; font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+.theme { position: absolute; top: 14px; right: 16px; }
+.axis { stroke: var(--line); }
+.tick { fill: var(--muted); font-size: 10px; }
+.cursor { stroke: var(--muted); stroke-dasharray: 3 3; }
+</style>
+</head>
+<body>
+<button class="theme" id="theme" aria-label="Toggle dark mode">◐</button>
+<main>
+<header>
+  <h1>Noether Check</h1>
+  <p class="lede">Neural surrogates for physics are graded on one-step error. Over long rollouts that grade says little: the models
+  quietly break conservation laws, and that is where they fail. Restoring the laws at every step fixes much of the damage, and
+  the laws the model still breaks give a free warning that a rollout has gone wrong.</p>
+  <div class="links">
+    <a class="btn" href="paper.html">Read the paper</a>
+    <a class="btn" href="noether-check.pdf">PDF</a>
+    <a class="btn" href="https://github.com/PS12007/noether-check">Code on GitHub</a>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<h2>Rollout lab</h2>
+<p>Precomputed rollouts from the trained models (seed 0, base size). Each model is rolled out on its own predictions, either
+<b style="color:var(--raw)">raw</b> or with a <b style="color:var(--proj)">Noether projection</b>: after every step, the smallest
+change to the state that restores the conserved quantities. Drag the time slider or press play.</p>
+<div class="lab">
+  <div class="controls">
+    <div class="group" id="g-sys"><span>System</span></div>
+    <div class="group" id="g-arch"><span>Model</span></div>
+    <div class="group" id="g-run"><span>Start</span></div>
+  </div>
+  <div class="panes" id="panes"></div>
+  <canvas id="profile" aria-label="Profile at the current time"></canvas>
+  <div class="time">
+    <button id="play" aria-label="Play">▶</button>
+    <input type="range" id="t" min="0" max="100" value="0" aria-label="Time">
+    <output id="tout">t = 0</output>
+  </div>
+  <div class="charts">
+    <div><h3>Error against the reference solver</h3><svg id="c-err"></svg></div>
+    <div><h3 id="h-drift">Held-out invariant drift (not projected)</h3><svg id="c-drift"></svg></div>
+  </div>
+  <div class="legend"><span><i style="border-color:var(--raw)"></i>raw</span><span><i style="border-color:var(--proj)"></i>projected</span>
+    <span><i style="border-color:var(--muted);border-top-style:dashed"></i>reference solver</span></div>
+  <div class="note" id="note"></div>
+</div>
+
+<h2>How it works</h2>
+<div class="steps">
+  <div class="step"><h3>Simulate</h3><p>Pseudo-spectral solvers on the GPU give reference data for two systems: KdV solitons (1D) and
+    decaying 2D Navier–Stokes turbulence. Each conserves known quantities, or loses them at a known rate.</p></div>
+  <div class="step"><h3>Train a zoo</h3><p>64 surrogates (36 for KdV, 28 for turbulence): FNO, ResNet and U-Net, at two sizes, plus input-noise and
+    soft-penalty variants, one to three seeds each. All are trained only to predict one step ahead.</p></div>
+  <div class="step"><h3>Project</h3><p>At each rollout step, a Gauss–Newton step finds the minimum-norm correction that restores mass
+    and momentum (KdV) or the mean and the exact energy budget (turbulence). No retraining.</p></div>
+  <div class="step"><h3>Monitor</h3><p>A quantity that is not projected (KdV energy, the turbulence enstrophy budget) should still
+    hold. Its drift, measured without the reference, flags failing rollouts.</p></div>
+</div>
+
+<h2>Results</h2>
+<figure><img src="figures/rank_kdv.png" alt="One-step error versus long-horizon outcome, all KdV models">
+  <figcaption>Across 36 KdV models, one-step error does not predict long-horizon behaviour. The ResNets have the lowest
+  one-step error, yet most of them blow up (plotted at 10).</figcaption></figure>
+<figure><img src="figures/horizon_kdv.png" alt="Error and energy drift versus rollout step for KdV">
+  <figcaption>Projecting mass and momentum (solid) against raw rollouts (dashed). Energy is never projected, yet its drift drops
+  too. Out of distribution, projection prevents blow-up but cannot make a model accurate.</figcaption></figure>
+<figure><img src="figures/horizon_ns.png" alt="Error and enstrophy drift versus rollout step for 2D turbulence">
+  <figcaption>The same comparison for 2D turbulence, projecting the mean vorticity and the exact energy budget. Pointwise accuracy is lost
+  within about 20 steps for every model (the flow is chaotic). After that, projection keeps the FNO and U-Net rollouts physical. The ResNets
+  still blow up, and the enstrophy budget, which is not projected, shows it.</figcaption></figure>
+<figure><img src="figures/monitor_kdv.png" alt="AUROC of drift monitors, KdV">
+  <figcaption>KdV: how well each label-free signal flags rollouts whose error exceeds 0.3, against disagreement with a twin model
+  (which needs a second network and a second rollout).</figcaption></figure>
+<figure><img src="figures/monitor_ns.png" alt="AUROC of budget monitors, turbulence">
+  <figcaption>Turbulence: flagging rollouts that have become unphysical (error above 2). The enstrophy budget scores 0.98–1.00; the twin
+  model drops toward chance, because twins that blow up together agree with each other.</figcaption></figure>
+
+<footer>Noether Check · an autonomous research project · code, data generation and paper on
+  <a href="https://github.com/PS12007/noether-check">GitHub</a>. Everything runs on one laptop GPU; no datasets are downloaded.</footer>
+</main>
+
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+const root = document.documentElement;
+try { const t = localStorage.getItem("theme"); if (t) root.dataset.theme = t; } catch (e) {}
+$("theme").onclick = () => {
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+  draw();
+};
+const css = (v) => getComputedStyle(root).getPropertyValue(v).trim();
+
+const ARCH = { fno: "FNO", resnet: "ResNet", unet: "U-Net" };
+const SYS = { kdv: "KdV solitons", ns: "2D turbulence" };
+const HELD = { kdv: "energy", ns: "enstrophy" };
+const data = {};
+const S = { sys: "kdv", arch: "resnet", run: 0, t: 1e9 };
+let playing = null;
+
+function decode(q) {
+  const bin = atob(q.b64), n = bin.length, out = new Float32Array(n), s = (q.hi - q.lo) / 255;
+  for (let i = 0; i < n; i++) out[i] = q.lo + bin.charCodeAt(i) * s;
+  return { shape: q.shape, v: out };
+}
+function prep(d) {
+  for (const r of d.runs) {
+    r.truthF = decode(r.truth);
+    for (const k in r.models) r.models[k].F = decode(r.models[k].field);
+  }
+  return d;
+}
+async function get(sys) {
+  if (!data[sys]) {
+    const res = await fetch(`data/${sys}.json`);
+    if (!res.ok) throw new Error(sys);
+    data[sys] = prep(await res.json());
+  }
+  return data[sys];
+}
+
+// RdBu-like diverging colour map, white at zero
+const STOPS = [[33, 102, 172], [103, 169, 207], [209, 229, 240], [247, 247, 247], [253, 219, 199], [239, 138, 98], [178, 24, 43]];
+function cmap(x) {  // x in [-1, 1]
+  const u = Math.max(0, Math.min(1, (x + 1) / 2)) * (STOPS.length - 1), i = Math.min(STOPS.length - 2, Math.floor(u)), f = u - i;
+  const a = STOPS[i], b = STOPS[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+function buttons(gid, items, key) {
+  const g = $(gid);
+  g.querySelectorAll("button").forEach((b) => b.remove());
+  for (const [val, label] of items) {
+    const b = document.createElement("button");
+    b.textContent = label; b.className = S[key] === val ? "on" : "";
+    b.onclick = () => { S[key] = val; if (key === "sys") { S.run = 0; S.t = 1e9; } setup(); };
+    g.appendChild(b);
+  }
+}
+
+let panes = [];
+async function setup() {
+  let d;
+  try { d = await get(S.sys); } catch (e) { $("note").textContent = "Demo data for this system is not available yet."; return; }
+  buttons("g-sys", Object.entries(SYS).filter(([k]) => k === "kdv" || data.nsOK !== false), "sys");
+  buttons("g-arch", Object.entries(ARCH), "arch");
+  buttons("g-run", d.runs.map((r, i) => [i, r.set === "test" ? `test ${r.index + 1}` : "out of distribution"]), "run");
+  const T = d.runs[0].truthF.shape[0];
+  $("t").max = T - 1; S.t = Math.min(S.t, T - 1); $("t").value = S.t;
+  $("h-drift").textContent = `Held-out ${HELD[S.sys]} ${S.sys === "ns" ? "budget residual" : "drift"} (never projected)`;
+  const P = $("panes"); P.innerHTML = "";
+  panes = [["Reference solver", "truth"], ["Raw rollout", "raw"], ["Projected rollout", "proj"]].map(([title, kind]) => {
+    const div = document.createElement("div"); div.className = `pane ${S.sys}`;
+    div.innerHTML = `<h3>${title}<em></em></h3><canvas></canvas>`;
+    P.appendChild(div);
+    return { kind, div, cv: div.querySelector("canvas"), em: div.querySelector("em") };
+  });
+  $("profile").style.display = S.sys === "kdv" ? "block" : "none";
+  draw();
+}
+
+function current() {
+  const d = data[S.sys], r = d.runs[S.run];
+  return { d, r, raw: r.models[`${S.arch}_raw`], proj: r.models[`${S.arch}_proj`] };
+}
+function vmaxOf(F) { let m = 0; const v = F.v, n = F.shape.slice(1).reduce((a, b) => a * b, 1); for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(v[i])); return m || 1; }
+
+function drawKdV(cv, F, deadFrame, vmax) {
+  // space-time image: x horizontal, time upward, rows above the current time faded
+  const [T, N] = F.shape;
+  cv.width = N; cv.height = T;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(N, T);
+  for (let t = 0; t < T; t++) {
+    const row = T - 1 - t, dead = deadFrame !== null && t >= deadFrame, future = t > S.t;
+    for (let x = 0; x < N; x++) {
+      const o = (row * N + x) * 4;
+      let c = dead ? [128, 128, 128] : cmap(F.v[t * N + x] / vmax);
+      const a = future ? 0.4 : 1;
+      img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255 * a;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function drawNS(cv, F, t, dead, vmax) {
+  const [, H, W] = F.shape;
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(W, H), off = t * H * W;
+  for (let i = 0; i < H * W; i++) {
+    const c = dead ? [128, 128, 128] : cmap(F.v[off + i] / vmax);
+    img.data[i * 4] = c[0]; img.data[i * 4 + 1] = c[1]; img.data[i * 4 + 2] = c[2]; img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function deadFrameOf(m, stride) { return m.dead === null || m.dead === undefined ? null : Math.ceil(m.dead / stride); }
+
+function draw() {
+  if (!data[S.sys] || !panes.length) return;
+  const { d, r, raw, proj } = current();
+  const st = d.stride, step = S.t * st, vmax = vmaxOf(r.truthF);
+  $("tout").textContent = `t = ${(step * d.dt).toFixed(1)}`;
+  for (const p of panes) {
+    const m = p.kind === "truth" ? null : p.kind === "raw" ? raw : proj;
+    const F = m ? m.F : r.truthF, df = m ? deadFrameOf(m, st) : null;
+    if (S.sys === "kdv") drawKdV(p.cv, F, df, vmax); else drawNS(p.cv, F, S.t, df !== null && S.t >= df, vmax);
+    if (m) {
+      const e = m.err[step];
+      p.em.textContent = df !== null && S.t >= df ? "blew up" : e === null || step === 0 ? "" : `error ${e < 0.01 ? e.toExponential(1) : e.toFixed(3)}`;
+    } else p.em.textContent = "";
+  }
+  if (S.sys === "kdv") profile(r, raw, proj, vmax);
+  chart($("c-err"), [raw.err, proj.err], null, step, d, true);
+  const key = HELD[S.sys];
+  chart($("c-drift"), [raw.drift[key], proj.drift[key]], r.truth_drift[key], step, d, true);
+  const dr = deadFrameOf(raw, st), dp = deadFrameOf(proj, st);
+  const fin = (m) => m.err[m.err.length - 1];
+  let msg = `${ARCH[S.arch]} on ${SYS[S.sys]}, ${r.set === "test" ? "a test start like the training data" : "an out-of-distribution start"}. `;
+  if (dr !== null && dp === null) msg += `The raw rollout blows up at t = ${(raw.dead * d.dt).toFixed(1)}; the projected one stays bounded (final error ${fin(proj).toFixed(2)}).`;
+  else if (dr !== null && dp !== null) msg += "Both rollouts blow up: projection keeps the invariants but cannot rescue this model here.";
+  else msg += `Final error: raw ${fin(raw).toFixed(3)}, projected ${fin(proj).toFixed(3)}.`;
+  if (r.set === "ood") msg += " Watch the held-out drift: it is large exactly when the rollout is wrong, and computing it needs no reference.";
+  $("note").textContent = msg;
+}
+
+function profile(r, raw, proj, vmax) {
+  const cv = $("profile"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+  const N = r.truthF.shape[1], off = S.t * N, ymax = vmax * 1.15, ymin = -vmax * 0.4;
+  const X = (i) => 4 + (w - 8) * i / (N - 1), Y = (v) => h - 4 - (h - 8) * (v - ymin) / (ymax - ymin);
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0)); ctx.stroke();
+  const line = (F, col, dash, dead) => {
+    if (dead) return;
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(dash); ctx.beginPath();
+    for (let i = 0; i < N; i++) { const v = Math.max(ymin, Math.min(ymax, F.v[off + i])); i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)); }
+    ctx.stroke(); ctx.setLineDash([]);
+  };
+  const st = data.kdv.stride, dd = (m) => deadFrameOf(m, st) !== null && S.t >= deadFrameOf(m, st);
+  line(r.truthF, css("--muted"), [5, 4], false);
+  line(raw.F, css("--raw"), [], dd(raw));
+  line(proj.F, css("--proj"), [], dd(proj));
+}
+
+function chart(svg, series, ref, step, d, logy) {
+  const w = svg.clientWidth || 400, h = svg.clientHeight || 170, L = 40, R = 8, Tp = 8, B = 20;
+  const T = series[0].length;
+  const all = series.flat().concat(ref || []).filter((v) => v !== null && v > 0 && isFinite(v));
+  let lo = Math.max(1e-7, Math.min(...all)), hi = Math.max(...all);
+  lo = Math.pow(10, Math.floor(Math.log10(lo))); hi = Math.pow(10, Math.ceil(Math.log10(Math.min(hi, 1e3))));
+  if (hi <= lo) hi = lo * 10;
+  const X = (i) => L + (w - L - R) * i / (T - 1);
+  const Y = (v) => Tp + (h - Tp - B) * (1 - (Math.log10(Math.max(lo, Math.min(hi, v))) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo)));
+  let s = "";
+  for (let e = Math.log10(lo); e <= Math.log10(hi) + 1e-9; e++) {
+    s += `<line class="axis" x1="${L}" x2="${w - R}" y1="${Y(10 ** e)}" y2="${Y(10 ** e)}"/>`;
+    s += `<text class="tick" x="${L - 5}" y="${Y(10 ** e) + 3}" text-anchor="end">1e${e}</text>`;
+  }
+  const tmax = (T - 1) * d.dt;
+  for (const f of [0, 0.5, 1]) s += `<text class="tick" x="${X(f * (T - 1))}" y="${h - 5}" text-anchor="middle">t=${(f * tmax).toFixed(0)}</text>`;
+  const path = (arr, col, dash) => {
+    let p = "", pen = false;
+    arr.forEach((v, i) => {
+      if (v === null || !(v > 0)) { pen = false; return; }
+      p += `${pen ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; pen = true;
+    });
+    return `<path d="${p}" fill="none" stroke="${col}" stroke-width="2" ${dash ? 'stroke-dasharray="5 4"' : ""} stroke-linejoin="round"/>`;
+  };
+  if (ref) s += path(ref, css("--muted"), true);
+  s += path(series[0], css("--raw")) + path(series[1], css("--proj"));
+  s += `<line class="cursor" x1="${X(step)}" x2="${X(step)}" y1="${Tp}" y2="${h - B}"/>`;
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.innerHTML = s;
+}
+
+$("t").oninput = (e) => { S.t = +e.target.value; draw(); };
+$("play").onclick = () => {
+  if (playing) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
+  $("play").textContent = "❚❚";
+  if (S.t >= +$("t").max) S.t = 0;
+  playing = setInterval(() => {
+    S.t++; if (S.t > +$("t").max) { S.t = +$("t").max; $("play").click(); }
+    $("t").value = S.t; draw();
+  }, 60);
+};
+addEventListener("resize", draw);
+
+// headline numbers from the summaries
+fetch("data/stats.json").then((r) => r.ok ? r.json() : null).then((st) => {
+  if (!st) return;
+  $("stats").innerHTML = st.map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join("");
+}).catch(() => {});
+fetch("data/ns.json", { method: "HEAD" }).then((r) => { data.nsOK = r.ok; setup(); }).catch(() => { data.nsOK = false; setup(); });
+})();
+</script>
+</body>
+</html>
